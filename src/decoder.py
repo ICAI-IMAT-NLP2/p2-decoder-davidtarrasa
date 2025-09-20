@@ -45,9 +45,13 @@ class AttentionHead(nn.Module):
         """
         # TODO: Implement the scaled dot-product attention mechanism, now with masking.
         dim_k = k.size(-1)
-        output = torch.bmm(weights, v)
-        scores = torch.bmm(q, k.transpose(1, 2)) / math.sqrt(dim_k) # (B,L,L), una matriz por frase donde cada fila i contiene las similitudes del token i contra todos los tokens j.
+        # scores = Q K^T / sqrt(dk)
+        scores = torch.bmm(q, k.transpose(1, 2)) / math.sqrt(dim_k)  # (B, L, L)
+        if mask is not None:
+            mask_bool = mask.to(dtype=torch.bool)
+            scores = scores.masked_fill(mask_bool == 0, float("-inf"))
         weights = F.softmax(scores, dim=-1) # hacemos softmax fila a fila por eso el dim=-1
+        output = torch.bmm(weights, v)
 
         return output, weights
 
@@ -66,7 +70,7 @@ class AttentionHead(nn.Module):
         k = self.wk(x)
         v = self.wv(x)
 
-        output, _ = self.scaled_dot_product_attention(q, k, v)
+        output, _ = self.scaled_dot_product_attention(q, k, v, mask=mask)
 
         return output
 
@@ -109,7 +113,7 @@ class MultiHeadAttention(nn.Module):
             Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # TODO: Implement the forward pass for the multi-head attention layer, now with masking.
-        head_outputs = [head(hidden_state) for head in self.heads]
+        head_outputs = [head(hidden_state, mask=mask) for head in self.heads]
         x = torch.cat(head_outputs, dim=-1) # concatena las salidas (B, T d_v) de todas las cabezas -> (B, T , h*d_v)
         x = self.output_linear(x) # aplicamos W^o para voolver a d_model
         return x
@@ -192,10 +196,18 @@ class TransformerDecoderLayer(nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # TODO: Implement the forward pass for the Transformer decoder layer
-        mask = mask.to(x.device)
+        B, L, _ = x.shape
 
-        hidden_state = x + self.attention(self.layer_norm_1(x), mask=mask)
+        attn_mask = None
+        if mask is not None:
+            # admite (1, L, L) o (B, L, L), expande a batch si hace falta
+            if mask.dim() == 3 and mask.size(0) == 1:
+                attn_mask = mask.expand(B, L, L)
+            else:
+                attn_mask = mask
+            attn_mask = attn_mask.to(x.device)
 
+        hidden_state = x + self.attention(self.layer_norm_1(x), mask=attn_mask)
         x = hidden_state + self.feed_forward(self.layer_norm_2(hidden_state))
         return x
 
